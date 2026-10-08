@@ -1,0 +1,15 @@
+{
+  "appId": "com.example.tasks",
+  "appName": "Infinity",
+  "webDir": "www",
+  "backgroundColor": "#464646",
+  "ios": {
+    "contentInset": "never"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchAutoHide": true,
+      "backgroundColor": "#464646"
+    }
+  }
+}

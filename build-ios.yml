@@ -1,0 +1,87 @@
+name: Build iOS IPA (unsigned)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  ios:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Arrange files
+        run: |
+          mkdir -p www resources
+          [ -f index.html ] && cp index.html www/index.html || true
+          [ -f icon-only.png ] && cp icon-only.png resources/ || true
+          [ -f splash.png ] && cp splash.png resources/ || true
+      - run: npm install
+      - run: npx cap add ios
+      - name: Generate icons and splash
+        continue-on-error: true
+        run: npx @capacitor/assets generate --ios --iconBackgroundColor '#464646' --splashBackgroundColor '#464646'
+      - run: npx cap sync ios
+      - name: Add certificate reader
+        continue-on-error: true
+        run: |
+          F=ios/App/App/AppDelegate.swift
+          cp "$F" /tmp/AppDelegate.swift.orig
+          sed -i.bak -E '/didFinishLaunchingWithOptions/ s/\{[[:space:]]*$/{ ProvisionInfo.store()/' "$F"
+          rm -f "$F.bak"
+          cat >> "$F" <<'SWIFT'
+
+          // Reads the signing profile inside the app so the web layer can show when it expires.
+          enum ProvisionInfo {
+              static func store() {
+                  guard let path = Bundle.main.path(forResource: "embedded", ofType: "mobileprovision"),
+                        let data = FileManager.default.contents(atPath: path),
+                        let start = data.range(of: Data("<?xml".utf8)),
+                        let end = data.range(of: Data("</plist>".utf8)),
+                        start.lowerBound < end.upperBound else { return }
+                  let xml = data.subdata(in: start.lowerBound..<end.upperBound)
+                  guard let plist = try? PropertyListSerialization.propertyList(from: xml, options: [], format: nil) as? [String: Any] else { return }
+                  let defaults = UserDefaults.standard
+                  if let expires = plist["ExpirationDate"] as? Date {
+                      let ms = String(Int64(expires.timeIntervalSince1970 * 1000))
+                      defaults.set(ms, forKey: "CapacitorStorage.provisionExpiry")
+                      defaults.set(ms, forKey: "provisionExpiry")
+                  }
+                  if let created = plist["CreationDate"] as? Date {
+                      let ms = String(Int64(created.timeIntervalSince1970 * 1000))
+                      defaults.set(ms, forKey: "CapacitorStorage.provisionCreated")
+                      defaults.set(ms, forKey: "provisionCreated")
+                  }
+              }
+          }
+          SWIFT
+      - name: Build unsigned archive
+        id: build
+        continue-on-error: true
+        working-directory: ios/App
+        run: |
+          if [ -d App.xcworkspace ]; then TARGET="-workspace App.xcworkspace"; else TARGET="-project App.xcodeproj"; fi
+          xcodebuild $TARGET -scheme App -configuration Release -destination 'generic/platform=iOS' \
+            -archivePath build/App.xcarchive archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+      - name: Retry without certificate reader
+        if: steps.build.outcome == 'failure'
+        working-directory: ios/App
+        run: |
+          [ -f /tmp/AppDelegate.swift.orig ] && cp /tmp/AppDelegate.swift.orig App/AppDelegate.swift || true
+          rm -rf build
+          if [ -d App.xcworkspace ]; then TARGET="-workspace App.xcworkspace"; else TARGET="-project App.xcodeproj"; fi
+          xcodebuild $TARGET -scheme App -configuration Release -destination 'generic/platform=iOS' \
+            -archivePath build/App.xcarchive archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+      - name: Package IPA
+        working-directory: ios/App
+        run: |
+          mkdir -p Payload
+          cp -R build/App.xcarchive/Products/Applications/App.app Payload/
+          zip -qr Infinity.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Infinity-ipa
+          path: ios/App/Infinity.ipa
