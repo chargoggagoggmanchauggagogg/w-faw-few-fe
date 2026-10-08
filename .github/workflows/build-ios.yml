@@ -1,0 +1,43 @@
+
+name: Build iOS IPA (unsigned)
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  ios:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Arrange files
+        run: |
+          mkdir -p www resources
+          [ -f index.html ] && cp index.html www/index.html || true
+          [ -f icon-only.png ] && cp icon-only.png resources/ || true
+          [ -f splash.png ] && cp splash.png resources/ || true
+      - run: npm install
+      - run: npx cap add ios
+      - name: Generate icons and splash
+        continue-on-error: true
+        run: npx @capacitor/assets generate --ios --iconBackgroundColor '#12353A' --splashBackgroundColor '#12353A'
+      - run: npx cap sync ios
+      - name: Build unsigned archive
+        working-directory: ios/App
+        run: |
+          if [ -d App.xcworkspace ]; then TARGET="-workspace App.xcworkspace"; else TARGET="-project App.xcodeproj"; fi
+          xcodebuild $TARGET -scheme App -configuration Release -destination 'generic/platform=iOS' \
+            -archivePath build/App.xcarchive archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+      - name: Package IPA
+        working-directory: ios/App
+        run: |
+          mkdir -p Payload
+          cp -R build/App.xcarchive/Products/Applications/App.app Payload/
+          zip -qr Tasks.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Tasks-ipa
+          path: ios/App/Tasks.ipa
